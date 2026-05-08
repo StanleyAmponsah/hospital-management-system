@@ -1,0 +1,11 @@
+# Database file (contains patient data)
+hospital.db
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.vscode/
+.idea/
