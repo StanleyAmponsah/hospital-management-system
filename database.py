@@ -348,7 +348,12 @@ def create_user(username: str, password: str, role: str, full_name: str = "", cr
 def get_users():
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, full_name, role, active, created_at FROM users ORDER BY created_at DESC")
+    cursor.execute(
+        """
+        SELECT id, username, full_name, role, login_id, active, created_at
+        FROM users ORDER BY created_at DESC
+        """
+    )
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -454,6 +459,33 @@ def log_audit(user_id, username, action, entity_type=None, entity_id=None, detai
     )
     conn.commit()
     conn.close()
+
+
+def record_login_password_reset_request(role: str, login_id: int, notes: str = "") -> None:
+    """Log a self-service password reset request for Doctor/Nurse/Lab login IDs (audit trail for staff)."""
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, username FROM users WHERE login_id = ? AND role = ?",
+        (int(login_id), role),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    uid = row[0] if row else None
+    uname = row[1] if row else None
+    parts = [f"role={role}", f"login_id={login_id}"]
+    parts.append(f"matched_user={uname}" if uname else "matched_user=(none)")
+    if (notes or "").strip():
+        parts.append(f"note={(notes or '').strip()}")
+    log_audit(
+        user_id=uid,
+        username=uname or f"{role}:{login_id}",
+        action="PASSWORD_RESET_REQUEST",
+        entity_type="users",
+        entity_id=uid,
+        details="; ".join(parts),
+    )
+
 
 def get_audit_logs(limit: int = 200):
     conn = connect()
