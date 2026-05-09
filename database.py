@@ -27,12 +27,24 @@ def initialize_db():
             username      TEXT NOT NULL UNIQUE,
             full_name     TEXT,
             role          TEXT NOT NULL,
+            login_id      INTEGER UNIQUE, -- optional numeric login for Doctor/Nurse
+            doctor_id     INTEGER,        -- optional link to doctors(id) for Doctor role
             password_hash BLOB NOT NULL,
             salt          BLOB NOT NULL,
             active        INTEGER NOT NULL DEFAULT 1,
-            created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (doctor_id) REFERENCES doctors(id)
         )
     """)
+
+    # ── Migration: add login_id / doctor_id to existing users table ──
+    cursor.execute("PRAGMA table_info(users)")
+    user_cols = {row[1] for row in cursor.fetchall()}
+    if "login_id" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN login_id INTEGER;")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id);")
+    if "doctor_id" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN doctor_id INTEGER;")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -277,6 +289,7 @@ def initialize_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_appointments_date    ON appointments(date);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_appointments_pid     ON appointments(patient_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username       ON users(username);")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts             ON audit_log(ts);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_doctors_active       ON doctors(active);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_encounters_patient   ON encounters(patient_id);")
@@ -345,7 +358,7 @@ def authenticate(username: str, password: str):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, username, full_name, role, password_hash, salt, active
+        SELECT id, username, full_name, role, login_id, doctor_id, password_hash, salt, active
         FROM users
         WHERE username = ?
         """,
@@ -355,13 +368,43 @@ def authenticate(username: str, password: str):
     conn.close()
     if not row:
         return None
-    uid, uname, full_name, role, pw_hash, salt, active = row
+    uid, uname, full_name, role, login_id, doctor_id, pw_hash, salt, active = row
     if not active:
         return None
     candidate = _hash_password(password, salt)
     if not hmac.compare_digest(pw_hash, candidate):
         return None
-    return {"id": uid, "username": uname, "full_name": full_name or "", "role": role}
+    return {"id": uid, "username": uname, "full_name": full_name or "", "role": role, "login_id": login_id, "doctor_id": doctor_id}
+
+def authenticate_by_login_id(role: str, login_id: int, password: str):
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, username, full_name, role, login_id, doctor_id, password_hash, salt, active
+        FROM users
+        WHERE login_id = ? AND role = ?
+        """,
+        (int(login_id), role),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    uid, uname, full_name, role, login_id, doctor_id, pw_hash, salt, active = row
+    if not active:
+        return None
+    candidate = _hash_password(password, salt)
+    if not hmac.compare_digest(pw_hash, candidate):
+        return None
+    return {"id": uid, "username": uname, "full_name": full_name or "", "role": role, "login_id": login_id, "doctor_id": doctor_id}
+
+def set_user_login_id(user_id: int, login_id: Optional[int], doctor_id: Optional[int] = None):
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET login_id = ?, doctor_id = ? WHERE id = ?", (login_id, doctor_id, user_id))
+    conn.commit()
+    conn.close()
 
 def set_user_password(user_id: int, new_password: str, changed_by_user=None):
     salt = os.urandom(16)

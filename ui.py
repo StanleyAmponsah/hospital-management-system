@@ -207,26 +207,46 @@ class HospitalApp(tk.Tk):
         win.grab_set()
 
         tk.Label(win, text="StanCare Login", font=FONT_TITLE, fg=PRIMARY, bg=BG).pack(pady=(22, 6))
-        tk.Label(
-            win,
-            text="Default admin on first run:\nusername: admin   password: admin123",
-            font=FONT_SMALL,
-            fg=MUTED,
-            bg=BG,
-            justify="center",
-        ).pack(pady=(0, 14))
+        tk.Label(win, text="Select account type", font=FONT_SMALL, fg=MUTED, bg=BG).pack(pady=(0, 10))
 
         form = tk.Frame(win, bg=BG, padx=50)
         form.pack(fill="x")
 
-        tk.Label(form, text="Username", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
+        login_mode = tk.StringVar(value="Staff")  # Staff / Doctor / Nurse
+        mode_row = tk.Frame(form, bg=BG)
+        mode_row.pack(fill="x", pady=(0, 10))
+        for m in ["Staff", "Doctor", "Nurse"]:
+            tk.Radiobutton(
+                mode_row,
+                text=m,
+                variable=login_mode,
+                value=m,
+                font=("Segoe UI", 9, "bold"),
+                bg=BG,
+                fg=PRIMARY,
+                activebackground=BG,
+                activeforeground=PRIMARY,
+                selectcolor=BG,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 12))
+
+        staff_frame = tk.Frame(form, bg=BG)
+        id_frame = tk.Frame(form, bg=BG)
+        staff_frame.pack(fill="x")
+
+        # Staff login (username/password)
+        tk.Label(staff_frame, text="Username", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
         username_var = tk.StringVar()
-        username_entry = tk.Entry(
-            form,
-            textvariable=username_var,
-        )
+        username_entry = tk.Entry(staff_frame, textvariable=username_var)
         style_entry(username_entry)
         username_entry.pack(fill="x", pady=(2, 12))
+
+        # Doctor/Nurse login (numeric ID/password)
+        tk.Label(id_frame, text="ID", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
+        login_id_var = tk.StringVar()
+        login_id_entry = tk.Entry(id_frame, textvariable=login_id_var)
+        style_entry(login_id_entry)
+        login_id_entry.pack(fill="x", pady=(2, 12))
 
         tk.Label(form, text="Password", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
         password_var = tk.StringVar()
@@ -259,14 +279,52 @@ class HospitalApp(tk.Tk):
         status = tk.Label(win, text="", font=FONT_SMALL, fg=DANGER, bg=BG)
         status.pack(pady=(6, 0))
 
+        hint = tk.Label(
+            win,
+            text="Staff default admin: username admin / password admin123",
+            font=FONT_SMALL,
+            fg=MUTED,
+            bg=BG,
+            justify="center",
+        )
+        hint.pack(pady=(6, 0))
+
+        def update_mode():
+            mode = login_mode.get()
+            status.configure(text="")
+            if mode == "Staff":
+                id_frame.pack_forget()
+                staff_frame.pack(fill="x")
+                username_entry.focus()
+            else:
+                staff_frame.pack_forget()
+                id_frame.pack(fill="x")
+                login_id_entry.focus()
+
+        login_mode.trace_add("write", lambda *_: update_mode())
+        update_mode()
+
         def do_login():
-            uname = username_var.get().strip()
+            mode = login_mode.get()
             pw = password_var.get()
-            if not uname or not pw:
-                status.configure(text="Enter both username and password.")
+            if not pw:
+                status.configure(text="Enter your password.")
                 return
 
-            user = db.authenticate(uname, pw)
+            if mode == "Staff":
+                uname = username_var.get().strip()
+                if not uname:
+                    status.configure(text="Enter your username.")
+                    return
+                user = db.authenticate(uname, pw)
+            else:
+                lid = login_id_var.get().strip()
+                if not lid.isdigit():
+                    status.configure(text="Enter a numeric ID.")
+                    return
+                role = "Doctor" if mode == "Doctor" else "Nurse"
+                user = db.authenticate_by_login_id(role, int(lid), pw)
+
             if not user:
                 status.configure(text="Invalid credentials (or account disabled).")
                 return
@@ -291,7 +349,6 @@ class HospitalApp(tk.Tk):
         exit_btn.pack(side="left")
 
         password_entry.bind("<Return>", lambda e: do_login())
-        username_entry.focus()
 
         self.wait_window(win)
 
@@ -306,9 +363,9 @@ class HospitalApp(tk.Tk):
 
         # Example stricter roles
         if role == "Doctor":
-            allowed = {"⊞  Dashboard", "👥  Patients", "📅  Appointments"}
+            allowed = {"⊞  Dashboard", "👥  Patients"}  # doctor works from patient profiles (encounters, rx, labs, etc.)
         elif role == "Nurse":
-            allowed = {"⊞  Dashboard", "👥  Patients"}
+            allowed = {"⊞  Dashboard", "👥  Patients"}  # nurse focuses on vitals via patient profile
         elif role == "Admin":
             allowed = {"⊞  Dashboard", "👥  Patients", "📅  Appointments", "🔍  Search", "🩺  Encounters", "👨‍⚕️  Doctors", "💳  Billing", "💊  Pharmacy", "🧪  Lab", "⚙  Users"}
 
@@ -326,7 +383,10 @@ class HospitalApp(tk.Tk):
                 if label_text not in btn_map:
                     btn = tk.Button(self.sidebar, text=label_text, command=command)
                     style_nav_button(btn, active=False)
-                    btn.pack(fill="x")
+                    if hasattr(self, "sidebar_spacer"):
+                        btn.pack(fill="x", before=self.sidebar_spacer)
+                    else:
+                        btn.pack(fill="x")
                     self.nav_buttons.append(btn)
                     btn_map[label_text] = btn
                     if hasattr(self, "_nav_full_text"):
@@ -387,9 +447,13 @@ class HospitalApp(tk.Tk):
             self.nav_buttons.append(btn)
             self._nav_full_text[btn] = label_text
 
-        # Footer
-        tk.Frame(self.sidebar, bg=PRIMARY).pack(fill="y", expand=True)
-        tk.Label(self.sidebar, text=f"© {datetime.now().year} StanCare",
+        # Spacer + Footer pinned to bottom
+        self.sidebar_spacer = tk.Frame(self.sidebar, bg=PRIMARY)
+        self.sidebar_spacer.pack(fill="both", expand=True)
+
+        footer = tk.Frame(self.sidebar, bg=PRIMARY)
+        footer.pack(side="bottom", fill="x")
+        tk.Label(footer, text="© 2026 StanCare",
                  font=FONT_SMALL, bg=PRIMARY, fg=MUTED).pack(pady=16)
 
         # ── Main area
@@ -822,6 +886,8 @@ class HospitalApp(tk.Tk):
         win.configure(bg=BG)
         win.grab_set()
 
+        role = (self.current_user or {}).get("role", "")
+
         # Header card
         outer, header = surface(win, bg=WHITE, pad=16)
         outer.pack(fill="x", padx=18, pady=(18, 12))
@@ -835,12 +901,14 @@ class HospitalApp(tk.Tk):
 
         quick = tk.Frame(header, bg=WHITE)
         quick.pack(side="right", anchor="e")
-        appt_btn = tk.Button(quick, text="📅 Book Appointment", command=lambda: self.open_add_appointment(p[0], p[1]))
-        style_button(appt_btn, SECONDARY)
-        appt_btn.pack(side="right", padx=(10, 0))
-        enc_btn = tk.Button(quick, text="+ New Encounter", command=lambda: self.open_add_encounter(p[0], refresh_callback=lambda: self._refresh_profile_tabs(win, p[0])))
-        style_button(enc_btn, PRIMARY)
-        enc_btn.pack(side="right")
+        if role in ("Admin", "Reception", "Doctor"):
+            appt_btn = tk.Button(quick, text="📅 Book Appointment", command=lambda: self.open_add_appointment(p[0], p[1]))
+            style_button(appt_btn, SECONDARY)
+            appt_btn.pack(side="right", padx=(10, 0))
+        if role in ("Admin", "Doctor"):
+            enc_btn = tk.Button(quick, text="+ New Encounter", command=lambda: self.open_add_encounter(p[0], refresh_callback=lambda: self._refresh_profile_tabs(win, p[0])))
+            style_button(enc_btn, PRIMARY)
+            enc_btn.pack(side="right")
 
         # Tabs
         body_outer, body = surface(win, bg=WHITE, pad=10)
@@ -849,8 +917,16 @@ class HospitalApp(tk.Tk):
         nb = ttk.Notebook(body)
         nb.pack(fill="both", expand=True)
 
+        # Role-based profile tabs
+        if role == "Nurse":
+            tab_keys = ["Vitals"]
+        elif role == "Doctor":
+            tab_keys = ["Encounters", "Lab", "Prescriptions", "Vitals", "Appointments"]
+        else:
+            tab_keys = ["Encounters", "Appointments", "Billing", "Lab", "Prescriptions", "Vitals"]
+
         tabs = {}
-        for key in ["Encounters", "Appointments", "Billing", "Lab", "Prescriptions", "Vitals"]:
+        for key in tab_keys:
             frame = tk.Frame(nb, bg=WHITE)
             nb.add(frame, text=key)
             tabs[key] = frame
@@ -866,184 +942,198 @@ class HospitalApp(tk.Tk):
         if not tabs:
             return
 
-        # Encounters
-        f = tabs["Encounters"]
-        for w in f.winfo_children():
-            w.destroy()
         encs = db.get_patient_encounters(patient_id)
-        cols = ("ID", "Type", "Doctor", "Reason", "Status", "Started", "Closed")
-        tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
-        for c in cols:
-            tree.heading(c, text=c)
-        tree.column("ID", width=60, anchor="center")
-        tree.column("Type", width=110, anchor="center")
-        tree.column("Doctor", width=180, anchor="w")
-        tree.column("Reason", width=240, anchor="w")
-        tree.column("Status", width=90, anchor="center")
-        tree.column("Started", width=140, anchor="center")
-        tree.column("Closed", width=140, anchor="center")
-        tree.pack(fill="both", expand=True, padx=10, pady=10)
-        for e in encs:
-            tree.insert("", "end", values=e)
 
-        btn_row = tk.Frame(f, bg=WHITE)
-        btn_row.pack(fill="x", padx=10, pady=(0, 10))
+        # Encounters
+        if "Encounters" in tabs:
+            f = tabs["Encounters"]
+            for w in f.winfo_children():
+                w.destroy()
+            cols = ("ID", "Type", "Doctor", "Reason", "Status", "Started", "Closed")
+            tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+            for c in cols:
+                tree.heading(c, text=c)
+            tree.column("ID", width=60, anchor="center")
+            tree.column("Type", width=110, anchor="center")
+            tree.column("Doctor", width=180, anchor="w")
+            tree.column("Reason", width=240, anchor="w")
+            tree.column("Status", width=90, anchor="center")
+            tree.column("Started", width=140, anchor="center")
+            tree.column("Closed", width=140, anchor="center")
+            tree.pack(fill="both", expand=True, padx=10, pady=10)
+            for e in encs:
+                tree.insert("", "end", values=e)
 
-        def close_selected():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showwarning("Select", "Select an encounter first.", parent=win)
-                return
-            enc_id = int(tree.item(sel[0])["values"][0])
-            if messagebox.askyesno("Close", "Close this encounter?", parent=win):
-                db.close_encounter(enc_id)
-                if self.current_user:
-                    db.log_audit(self.current_user["id"], self.current_user["username"], "CLOSE_ENCOUNTER", "encounters", enc_id, "Closed encounter")
-                self._refresh_profile_tabs(win, patient_id)
+            # Only Doctor/Admin can close encounters
+            role = (self.current_user or {}).get("role", "")
+            if role in ("Admin", "Doctor"):
+                btn_row = tk.Frame(f, bg=WHITE)
+                btn_row.pack(fill="x", padx=10, pady=(0, 10))
 
-        close_btn = tk.Button(btn_row, text="Close Encounter", command=close_selected)
-        style_button(close_btn, ACCENT, fg=PRIMARY)
-        close_btn.pack(side="left")
+                def close_selected():
+                    sel = tree.selection()
+                    if not sel:
+                        messagebox.showwarning("Select", "Select an encounter first.", parent=win)
+                        return
+                    enc_id = int(tree.item(sel[0])["values"][0])
+                    if messagebox.askyesno("Close", "Close this encounter?", parent=win):
+                        db.close_encounter(enc_id)
+                        if self.current_user:
+                            db.log_audit(self.current_user["id"], self.current_user["username"], "CLOSE_ENCOUNTER", "encounters", enc_id, "Closed encounter")
+                        self._refresh_profile_tabs(win, patient_id)
+
+                close_btn = tk.Button(btn_row, text="Close Encounter", command=close_selected)
+                style_button(close_btn, ACCENT, fg=PRIMARY)
+                close_btn.pack(side="left")
 
         # Appointments
-        f = tabs["Appointments"]
-        for w in f.winfo_children():
-            w.destroy()
-        appts = db.get_patient_appointments(patient_id)
-        cols = ("ID", "Doctor", "Date", "Time", "Notes", "Status")
-        tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
-        for c in cols:
-            tree.heading(c, text=c)
-        tree.column("ID", width=60, anchor="center")
-        tree.column("Doctor", width=180, anchor="w")
-        tree.column("Date", width=120, anchor="center")
-        tree.column("Time", width=80, anchor="center")
-        tree.column("Notes", width=360, anchor="w")
-        tree.column("Status", width=100, anchor="center")
-        tree.pack(fill="both", expand=True, padx=10, pady=10)
-        for a in appts:
-            tree.insert("", "end", values=(a[0], a[3], a[4], a[5], a[6] or "", a[7]))
+        if "Appointments" in tabs:
+            f = tabs["Appointments"]
+            for w in f.winfo_children():
+                w.destroy()
+            appts = db.get_patient_appointments(patient_id)
+            cols = ("ID", "Doctor", "Date", "Time", "Notes", "Status")
+            tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+            for c in cols:
+                tree.heading(c, text=c)
+            tree.column("ID", width=60, anchor="center")
+            tree.column("Doctor", width=180, anchor="w")
+            tree.column("Date", width=120, anchor="center")
+            tree.column("Time", width=80, anchor="center")
+            tree.column("Notes", width=360, anchor="w")
+            tree.column("Status", width=100, anchor="center")
+            tree.pack(fill="both", expand=True, padx=10, pady=10)
+            for a in appts:
+                tree.insert("", "end", values=(a[0], a[3], a[4], a[5], a[6] or "", a[7]))
 
         # Billing
-        f = tabs["Billing"]
-        for w in f.winfo_children():
-            w.destroy()
-        invoices = db.get_patient_invoices(patient_id)
-        cols = ("Invoice ID", "Status", "Created", "Total", "Paid", "Balance")
-        tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
-        for c in cols:
-            tree.heading(c, text=c)
-        for c, w in zip(cols, [90, 120, 160, 90, 90, 90]):
-            tree.column(c, width=w, anchor="center" if c != "Status" else "w")
-        tree.pack(fill="both", expand=True, padx=10, pady=10)
-        for inv in invoices:
-            inv_id, status, created, total, paid = inv
-            bal = float(total) - float(paid)
-            tree.insert("", "end", values=(inv_id, status, created, f"{total:.2f}", f"{paid:.2f}", f"{bal:.2f}"))
+        if "Billing" in tabs:
+            f = tabs["Billing"]
+            for w in f.winfo_children():
+                w.destroy()
+            invoices = db.get_patient_invoices(patient_id)
+            cols = ("Invoice ID", "Status", "Created", "Total", "Paid", "Balance")
+            tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+            for c in cols:
+                tree.heading(c, text=c)
+            for c, w in zip(cols, [90, 120, 160, 90, 90, 90]):
+                tree.column(c, width=w, anchor="center" if c != "Status" else "w")
+            tree.pack(fill="both", expand=True, padx=10, pady=10)
+            for inv in invoices:
+                inv_id, status, created, total, paid = inv
+                bal = float(total) - float(paid)
+                tree.insert("", "end", values=(inv_id, status, created, f"{total:.2f}", f"{paid:.2f}", f"{bal:.2f}"))
 
-        btn_row = tk.Frame(f, bg=WHITE)
-        btn_row.pack(fill="x", padx=10, pady=(0, 10))
+            btn_row = tk.Frame(f, bg=WHITE)
+            btn_row.pack(fill="x", padx=10, pady=(0, 10))
 
-        def new_invoice():
-            self.open_create_invoice(patient_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id))
+            def new_invoice():
+                self.open_create_invoice(patient_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id))
 
-        ni = tk.Button(btn_row, text="+ New Invoice", command=new_invoice)
-        style_button(ni, SECONDARY)
-        ni.pack(side="left")
+            ni = tk.Button(btn_row, text="+ New Invoice", command=new_invoice)
+            style_button(ni, SECONDARY)
+            ni.pack(side="left")
 
         # Lab & Prescriptions & Vitals show via selected encounter (if any)
         # To keep v1 simple: show most recent encounter's items
         latest_enc_id = encs[0][0] if encs else None
 
         # Lab
-        f = tabs["Lab"]
-        for w in f.winfo_children():
-            w.destroy()
-        if not latest_enc_id:
-            tk.Label(f, text="No encounters yet. Create an encounter to add lab orders.", bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(pady=18)
-        else:
-            orders = db.get_encounter_lab_orders(latest_enc_id)
-            cols = ("Order ID", "Test", "Priority", "Status", "Ordered At", "Result")
-            tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
-            for c in cols:
-                tree.heading(c, text=c)
-            tree.column("Order ID", width=80, anchor="center")
-            tree.column("Test", width=220, anchor="w")
-            tree.column("Priority", width=90, anchor="center")
-            tree.column("Status", width=110, anchor="center")
-            tree.column("Ordered At", width=160, anchor="center")
-            tree.column("Result", width=280, anchor="w")
-            tree.pack(fill="both", expand=True, padx=10, pady=10)
-            for o in orders:
-                tree.insert("", "end", values=o)
+        if "Lab" in tabs:
+            f = tabs["Lab"]
+            for w in f.winfo_children():
+                w.destroy()
+            if not latest_enc_id:
+                tk.Label(f, text="No encounters yet. Create an encounter to add lab orders.", bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(pady=18)
+            else:
+                orders = db.get_encounter_lab_orders(latest_enc_id)
+                cols = ("Order ID", "Test", "Priority", "Status", "Ordered At", "Result")
+                tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+                for c in cols:
+                    tree.heading(c, text=c)
+                tree.column("Order ID", width=80, anchor="center")
+                tree.column("Test", width=220, anchor="w")
+                tree.column("Priority", width=90, anchor="center")
+                tree.column("Status", width=110, anchor="center")
+                tree.column("Ordered At", width=160, anchor="center")
+                tree.column("Result", width=280, anchor="w")
+                tree.pack(fill="both", expand=True, padx=10, pady=10)
+                for o in orders:
+                    tree.insert("", "end", values=o)
 
-            btn_row = tk.Frame(f, bg=WHITE)
-            btn_row.pack(fill="x", padx=10, pady=(0, 10))
-            add_o = tk.Button(btn_row, text="+ Lab Order", command=lambda: self.open_add_lab_order(latest_enc_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
-            style_button(add_o, PRIMARY)
-            add_o.pack(side="left", padx=(0, 10))
-            add_r = tk.Button(btn_row, text="Add/Update Result", command=lambda: self.open_set_lab_result(tree, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
-            style_button(add_r, ACCENT, fg=PRIMARY)
-            add_r.pack(side="left")
+                btn_row = tk.Frame(f, bg=WHITE)
+                btn_row.pack(fill="x", padx=10, pady=(0, 10))
+                role = (self.current_user or {}).get("role", "")
+                if role in ("Admin", "Doctor"):
+                    add_o = tk.Button(btn_row, text="+ Lab Order", command=lambda: self.open_add_lab_order(latest_enc_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
+                    style_button(add_o, PRIMARY)
+                    add_o.pack(side="left", padx=(0, 10))
+                add_r = tk.Button(btn_row, text="Add/Update Result", command=lambda: self.open_set_lab_result(tree, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
+                style_button(add_r, ACCENT, fg=PRIMARY)
+                add_r.pack(side="left")
 
         # Prescriptions
-        f = tabs["Prescriptions"]
-        for w in f.winfo_children():
-            w.destroy()
-        if not latest_enc_id:
-            tk.Label(f, text="No encounters yet. Create an encounter to add prescriptions.", bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(pady=18)
-        else:
-            rx = db.get_encounter_prescriptions(latest_enc_id)
-            cols = ("ID", "Drug", "Dosage", "Frequency", "Duration", "Status", "Created")
-            tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
-            for c in cols:
-                tree.heading(c, text=c)
-            tree.column("ID", width=60, anchor="center")
-            tree.column("Drug", width=200, anchor="w")
-            tree.column("Dosage", width=130, anchor="w")
-            tree.column("Frequency", width=130, anchor="w")
-            tree.column("Duration", width=110, anchor="w")
-            tree.column("Status", width=90, anchor="center")
-            tree.column("Created", width=140, anchor="center")
-            tree.pack(fill="both", expand=True, padx=10, pady=10)
-            for r in rx:
-                tree.insert("", "end", values=r)
-            btn_row = tk.Frame(f, bg=WHITE)
-            btn_row.pack(fill="x", padx=10, pady=(0, 10))
-            add_rx = tk.Button(btn_row, text="+ Add Prescription", command=lambda: self.open_add_prescription(latest_enc_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
-            style_button(add_rx, PRIMARY)
-            add_rx.pack(side="left")
+        if "Prescriptions" in tabs:
+            f = tabs["Prescriptions"]
+            for w in f.winfo_children():
+                w.destroy()
+            if not latest_enc_id:
+                tk.Label(f, text="No encounters yet. Create an encounter to add prescriptions.", bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(pady=18)
+            else:
+                rx = db.get_encounter_prescriptions(latest_enc_id)
+                cols = ("ID", "Drug", "Dosage", "Frequency", "Duration", "Status", "Created")
+                tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+                for c in cols:
+                    tree.heading(c, text=c)
+                tree.column("ID", width=60, anchor="center")
+                tree.column("Drug", width=200, anchor="w")
+                tree.column("Dosage", width=130, anchor="w")
+                tree.column("Frequency", width=130, anchor="w")
+                tree.column("Duration", width=110, anchor="w")
+                tree.column("Status", width=90, anchor="center")
+                tree.column("Created", width=140, anchor="center")
+                tree.pack(fill="both", expand=True, padx=10, pady=10)
+                for r in rx:
+                    tree.insert("", "end", values=r)
+                role = (self.current_user or {}).get("role", "")
+                if role in ("Admin", "Doctor"):
+                    btn_row = tk.Frame(f, bg=WHITE)
+                    btn_row.pack(fill="x", padx=10, pady=(0, 10))
+                    add_rx = tk.Button(btn_row, text="+ Add Prescription", command=lambda: self.open_add_prescription(latest_enc_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
+                    style_button(add_rx, PRIMARY)
+                    add_rx.pack(side="left")
 
         # Vitals
-        f = tabs["Vitals"]
-        for w in f.winfo_children():
-            w.destroy()
-        if not latest_enc_id:
-            tk.Label(f, text="No encounters yet. Create an encounter to record vitals.", bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(pady=18)
-        else:
-            vitals = db.get_encounter_vitals(latest_enc_id)
-            cols = ("Time", "Temp", "Pulse", "BP", "Resp", "SpO2", "Weight", "Height")
-            tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
-            for c in cols:
-                tree.heading(c, text=c)
-            tree.column("Time", width=160, anchor="center")
-            tree.column("Temp", width=80, anchor="center")
-            tree.column("Pulse", width=80, anchor="center")
-            tree.column("BP", width=90, anchor="center")
-            tree.column("Resp", width=80, anchor="center")
-            tree.column("SpO2", width=80, anchor="center")
-            tree.column("Weight", width=90, anchor="center")
-            tree.column("Height", width=90, anchor="center")
-            tree.pack(fill="both", expand=True, padx=10, pady=10)
-            for v in vitals:
-                ts, temp, pulse, sys, dia, resp, spo2, wkg, hcm = v
-                bp = f"{sys}/{dia}" if sys is not None and dia is not None else ""
-                tree.insert("", "end", values=(ts, temp or "", pulse or "", bp, resp or "", spo2 or "", wkg or "", hcm or ""))
-            btn_row = tk.Frame(f, bg=WHITE)
-            btn_row.pack(fill="x", padx=10, pady=(0, 10))
-            add_v = tk.Button(btn_row, text="+ Record Vitals", command=lambda: self.open_add_vitals(latest_enc_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
-            style_button(add_v, PRIMARY)
-            add_v.pack(side="left")
+        if "Vitals" in tabs:
+            f = tabs["Vitals"]
+            for w in f.winfo_children():
+                w.destroy()
+            if not latest_enc_id:
+                tk.Label(f, text="No encounters yet. Create an encounter to record vitals.", bg=WHITE, fg=MUTED, font=("Segoe UI", 10)).pack(pady=18)
+            else:
+                vitals = db.get_encounter_vitals(latest_enc_id)
+                cols = ("Time", "Temp", "Pulse", "BP", "Resp", "SpO2", "Weight", "Height")
+                tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+                for c in cols:
+                    tree.heading(c, text=c)
+                tree.column("Time", width=160, anchor="center")
+                tree.column("Temp", width=80, anchor="center")
+                tree.column("Pulse", width=80, anchor="center")
+                tree.column("BP", width=90, anchor="center")
+                tree.column("Resp", width=80, anchor="center")
+                tree.column("SpO2", width=80, anchor="center")
+                tree.column("Weight", width=90, anchor="center")
+                tree.column("Height", width=90, anchor="center")
+                tree.pack(fill="both", expand=True, padx=10, pady=10)
+                for v in vitals:
+                    ts, temp, pulse, sys, dia, resp, spo2, wkg, hcm = v
+                    bp = f"{sys}/{dia}" if sys is not None and dia is not None else ""
+                    tree.insert("", "end", values=(ts, temp or "", pulse or "", bp, resp or "", spo2 or "", wkg or "", hcm or ""))
+                btn_row = tk.Frame(f, bg=WHITE)
+                btn_row.pack(fill="x", padx=10, pady=(0, 10))
+                add_v = tk.Button(btn_row, text="+ Record Vitals", command=lambda: self.open_add_vitals(latest_enc_id, refresh_callback=lambda: self._refresh_profile_tabs(win, patient_id)))
+                style_button(add_v, PRIMARY)
+                add_v.pack(side="left")
 
     # ── Profile helpers (modals) ──
     def open_add_encounter(self, patient_id: int, refresh_callback=None):
@@ -1546,7 +1636,8 @@ class HospitalApp(tk.Tk):
     def open_add_user(self):
         win = tk.Toplevel(self)
         win.title("Add User")
-        win.geometry("460x520")
+        # Window got taller after adding Login ID; increase height so the button stays visible.
+        win.geometry("460x620")
         win.configure(bg=BG)
         win.resizable(False, False)
         win.grab_set()
@@ -1580,6 +1671,11 @@ class HospitalApp(tk.Tk):
         )
         role_combo.pack(fill="x", pady=(2, 10))
 
+        tk.Label(form, text="Login ID (Doctor/Nurse only)", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
+        login_id_e = tk.Entry(form)
+        style_entry(login_id_e)
+        login_id_e.pack(fill="x", pady=(2, 10))
+
         password_e = add_field("Password", show="•")
         confirm_e = add_field("Confirm Password", show="•")
 
@@ -1600,7 +1696,19 @@ class HospitalApp(tk.Tk):
                 messagebox.showwarning("Password", "Password must be at least 6 characters.", parent=win)
                 return
             try:
-                db.create_user(username=username, password=pw, role=role, full_name=full_name, created_by_user=self.current_user)
+                uid = db.create_user(username=username, password=pw, role=role, full_name=full_name, created_by_user=self.current_user)
+                lid = login_id_e.get().strip()
+                if role in ("Doctor", "Nurse"):
+                    if not lid.isdigit():
+                        messagebox.showwarning("Login ID", "Doctor/Nurse must have a numeric Login ID.", parent=win)
+                        return
+                    db.set_user_login_id(uid, int(lid), doctor_id=None)
+                elif lid:
+                    # allow setting login_id for other roles too, but must be numeric
+                    if not lid.isdigit():
+                        messagebox.showwarning("Login ID", "Login ID must be numeric.", parent=win)
+                        return
+                    db.set_user_login_id(uid, int(lid), doctor_id=None)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not create user.\n\n{e}", parent=win)
                 return
