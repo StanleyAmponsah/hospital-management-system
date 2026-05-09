@@ -455,6 +455,52 @@ def log_audit(user_id, username, action, entity_type=None, entity_id=None, detai
     conn.commit()
     conn.close()
 
+def get_audit_logs(limit: int = 200):
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT ts, COALESCE(username,''), action, COALESCE(entity_type,''), COALESCE(entity_id,''), COALESCE(details,'')
+        FROM audit_log
+        ORDER BY ts DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_audit_logs_filtered(search: str = "", limit: int = 500):
+    q = (search or "").strip()
+    conn = connect()
+    cursor = conn.cursor()
+    if not q:
+        cursor.execute(
+            """
+            SELECT ts, COALESCE(username,''), action, COALESCE(entity_type,''), COALESCE(entity_id,''), COALESCE(details,'')
+            FROM audit_log
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+    else:
+        like = f"%{q}%"
+        cursor.execute(
+            """
+            SELECT ts, COALESCE(username,''), action, COALESCE(entity_type,''), COALESCE(entity_id,''), COALESCE(details,'')
+            FROM audit_log
+            WHERE username LIKE ? OR action LIKE ? OR entity_type LIKE ? OR CAST(entity_id AS TEXT) LIKE ? OR details LIKE ?
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, like, int(limit)),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 # ── PATIENT OPERATIONS ──
 
 def add_patient(name, age, gender, contact, condition):
@@ -646,6 +692,33 @@ def get_stats():
         "today_appointments": today_appts
     }
 
+
+def get_admin_kpis():
+    """Aggregate metrics for Admin dashboard (no patient identifiers)."""
+    s = get_stats()
+    unpaid_count = 0
+    outstanding = 0.0
+    for inv in get_all_invoices():
+        total = float(inv[4])
+        paid = float(inv[5])
+        bal = total - paid
+        if bal > 1e-6:
+            unpaid_count += 1
+            outstanding += bal
+    low_n = len(get_low_stock_items())
+    pending_lab = 0
+    for row in get_all_lab_orders():
+        if row[4] in ("Ordered", "In Progress"):
+            pending_lab += 1
+    return {
+        "patients_registered": s["total"],
+        "appointments_today": s["today_appointments"],
+        "unpaid_invoice_count": unpaid_count,
+        "outstanding_total": round(outstanding, 2),
+        "low_stock_skus": low_n,
+        "lab_orders_pending": pending_lab,
+    }
+
 # ── DEPARTMENTS / DOCTORS ──
 
 def add_department(name: str) -> int:
@@ -753,6 +826,26 @@ def get_patient_encounters(patient_id: int):
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+def get_latest_encounter_id_for_patient(patient_id: int) -> Optional[int]:
+    """Return latest encounter id for a patient (prefer Open, else latest any)."""
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM encounters WHERE patient_id = ? AND status = 'Open' ORDER BY started_at DESC LIMIT 1",
+        (patient_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return int(row[0])
+    cursor.execute(
+        "SELECT id FROM encounters WHERE patient_id = ? ORDER BY started_at DESC LIMIT 1",
+        (patient_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0]) if row else None
 
 def get_all_encounters(status: Optional[str] = None):
     conn = connect()

@@ -8,6 +8,7 @@ import re
 import os
 import shutil
 import csv
+import sys
 
 # ── COLORS & FONTS ──
 PRIMARY    = "#0a3d62"
@@ -198,114 +199,247 @@ class HospitalApp(tk.Tk):
         self.show_dashboard()
 
     def _require_login(self):
-        """Block app usage until a user logs in."""
+        """Landing → role-specific login until success or app exit."""
+        while True:
+            mode = self._show_role_selector()
+            if mode == "__EXIT__":
+                self.destroy()
+                sys.exit(0)
+            while True:
+                if self._show_login_screen(mode):
+                    return
+
+    def _show_role_selector(self):
+        """Landing page: choose how you use StanCare."""
+        result = {"mode": None}
         win = tk.Toplevel(self)
-        win.title("Login — StanCare")
-        win.geometry("420x420")
+        win.title("StanCare — Welcome")
+        win.geometry("940x720")
+        win.configure(bg=BG)
+        win.resizable(True, True)
+        win.minsize(860, 640)
+        win.grab_set()
+
+        def on_role_win_close():
+            if result["mode"] is None:
+                result["mode"] = "__EXIT__"
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", on_role_win_close)
+
+        header = tk.Frame(win, bg=PRIMARY)
+        header.pack(fill="x")
+        header_inner = tk.Frame(header, bg=PRIMARY)
+        header_inner.pack(fill="x", padx=28, pady=(26, 26))
+
+        logo_row = tk.Frame(header_inner, bg=PRIMARY)
+        logo_row.pack(fill="x")
+
+        badge = tk.Frame(logo_row, bg="#08304d", width=58, height=58)
+        badge.pack(side="left", padx=(0, 18))
+        badge.pack_propagate(False)
+        tk.Label(badge, text="\U0001f3e5", font=("Segoe UI", 28), bg="#08304d", fg=WHITE).place(relx=0.5, rely=0.5, anchor="center")
+
+        brand_col = tk.Frame(logo_row, bg=PRIMARY)
+        brand_col.pack(side="left", fill="y")
+        tk.Label(brand_col, text="StanCare", font=("Segoe UI", 28, "bold"), fg=WHITE, bg=PRIMARY).pack(anchor="w")
+        tk.Label(
+            brand_col,
+            text="Hospital Management System",
+            font=("Segoe UI", 11),
+            fg="#c5d6e8",
+            bg=PRIMARY,
+        ).pack(anchor="w", pady=(2, 0))
+
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=36, pady=(28, 16))
+
+        tk.Label(
+            body,
+            text="How would you like to sign in?",
+            font=("Segoe UI", 17, "bold"),
+            fg=PRIMARY,
+            bg=BG,
+        ).pack(anchor="w")
+        tk.Label(
+            body,
+            text="Pick your role — we'll open the correct login screen for you.",
+            font=("Segoe UI", 10),
+            fg=MUTED,
+            bg=BG,
+        ).pack(anchor="w", pady=(6, 22))
+
+        tiles_wrap = tk.Frame(body, bg=BG)
+        tiles_wrap.pack(fill="both", expand=True)
+
+        roles = [
+            ("Staff", "\U0001f6ce", "Staff & administration", "Username + password for Admin, Billing, Reception, Pharmacy, etc."),
+            ("Doctor", "\U0001fa7a", "Doctor", "Your Doctor ID + password — clinical workspace."),
+            ("Nurse", "\U0001f489", "Nurse", "Your Nurse ID + password — vitals and patient safety."),
+            ("Lab", "\U0001f9ea", "Laboratory", "Your Lab ID + password — upload and manage results."),
+        ]
+
+        def choose(m):
+            result["mode"] = m
+            win.destroy()
+
+        def exit_app():
+            result["mode"] = "__EXIT__"
+            win.destroy()
+
+        for idx, (mode_key, icon, title, blurb) in enumerate(roles):
+            r, c = divmod(idx, 2)
+            cell = tk.Frame(tiles_wrap, bg=BG)
+            cell.grid(row=r, column=c, padx=10, pady=10, sticky="nsew")
+            tiles_wrap.grid_rowconfigure(r, weight=1)
+            tiles_wrap.grid_columnconfigure(c, weight=1)
+
+            outer, inner = surface(cell, bg=WHITE, pad=22)
+            outer.pack(fill="both", expand=True)
+
+            tk.Label(inner, text=icon, font=("Segoe UI", 28), bg=WHITE).pack(anchor="w")
+            tk.Label(inner, text=title, font=("Segoe UI", 13, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w", pady=(8, 4))
+            tk.Label(
+                inner,
+                text=blurb,
+                font=("Segoe UI", 10),
+                fg=MUTED,
+                bg=WHITE,
+                wraplength=340,
+                justify="left",
+            ).pack(anchor="w")
+            tk.Label(inner, text="Click to continue →", font=("Segoe UI", 9, "bold"), fg=SECONDARY, bg=WHITE).pack(anchor="w", pady=(14, 0))
+
+            def on_pick(event=None, m=mode_key):
+                choose(m)
+
+            def hand_enter(_, w):
+                w.configure(cursor="hand2")
+
+            def hand_leave(_, w):
+                w.configure(cursor="")
+
+            for w in (outer, inner):
+                w.bind("<Button-1>", on_pick)
+                w.bind("<Enter>", lambda e, ww=w: hand_enter(e, ww))
+                w.bind("<Leave>", lambda e, ww=w: hand_leave(e, ww))
+
+            # Labels absorb clicks unless bound explicitly.
+            for child in inner.winfo_children():
+                child.bind("<Button-1>", on_pick)
+                child.bind("<Enter>", lambda e, ww=child: hand_enter(e, ww))
+                child.bind("<Leave>", lambda e, ww=child: hand_leave(e, ww))
+
+        footer = tk.Frame(win, bg=BG)
+        footer.pack(fill="x", pady=(0, 14))
+        tk.Label(footer, text="© 2026 StanCare", font=("Segoe UI", 9), fg=MUTED, bg=BG).pack(side="left", padx=36)
+        quit_btn = tk.Button(footer, text="Exit application", command=exit_app)
+        style_button(quit_btn, DANGER)
+        quit_btn.pack(side="right", padx=36)
+
+        self.wait_window(win)
+        return result["mode"]
+
+    def _show_login_screen(self, mode: str):
+        """Focused login for one role. Returns True if logged in, False if Back."""
+        titles = {
+            "Staff": "Staff sign-in",
+            "Doctor": "Doctor sign-in",
+            "Nurse": "Nurse sign-in",
+            "Lab": "Laboratory sign-in",
+        }
+        subtitles = {
+            "Staff": "Use your username and password.",
+            "Doctor": "Use your Doctor ID and password.",
+            "Nurse": "Use your Nurse ID and password.",
+            "Lab": "Use your Lab ID and password.",
+        }
+        outcome = {"ok": False}
+        win = tk.Toplevel(self)
+        win.title(f"{titles.get(mode, 'Sign in')} — StanCare")
+        win.geometry("520x600")
         win.configure(bg=BG)
         win.resizable(False, False)
         win.grab_set()
 
-        tk.Label(win, text="StanCare Login", font=FONT_TITLE, fg=PRIMARY, bg=BG).pack(pady=(22, 6))
-        tk.Label(win, text="Select account type", font=FONT_SMALL, fg=MUTED, bg=BG).pack(pady=(0, 10))
+        top = tk.Frame(win, bg=BG)
+        top.pack(fill="x", padx=22, pady=(16, 8))
 
-        form = tk.Frame(win, bg=BG, padx=50)
-        form.pack(fill="x")
+        def go_back():
+            outcome["ok"] = False
+            win.destroy()
 
-        login_mode = tk.StringVar(value="Staff")  # Staff / Doctor / Nurse
-        mode_row = tk.Frame(form, bg=BG)
-        mode_row.pack(fill="x", pady=(0, 10))
-        for m in ["Staff", "Doctor", "Nurse"]:
-            tk.Radiobutton(
-                mode_row,
-                text=m,
-                variable=login_mode,
-                value=m,
-                font=("Segoe UI", 9, "bold"),
-                bg=BG,
-                fg=PRIMARY,
-                activebackground=BG,
-                activeforeground=PRIMARY,
-                selectcolor=BG,
-                cursor="hand2",
-            ).pack(side="left", padx=(0, 12))
+        win.protocol("WM_DELETE_WINDOW", go_back)
 
-        staff_frame = tk.Frame(form, bg=BG)
-        id_frame = tk.Frame(form, bg=BG)
-        staff_frame.pack(fill="x")
+        back_btn = tk.Button(top, text="←  Back", command=go_back)
+        style_button(back_btn, WHITE, fg=PRIMARY)
+        back_btn.configure(activebackground="#eef4fb", activeforeground=PRIMARY, padx=12, pady=6)
+        back_btn.pack(side="left")
 
-        # Staff login (username/password)
-        tk.Label(staff_frame, text="Username", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
+        tk.Label(win, text=titles.get(mode, "Sign in"), font=("Segoe UI", 20, "bold"), fg=PRIMARY, bg=BG).pack(pady=(8, 4))
+        tk.Label(win, text=subtitles.get(mode, ""), font=("Segoe UI", 10), fg=MUTED, bg=BG).pack(pady=(0, 14))
+
+        card_outer, card = surface(win, bg=WHITE, pad=22)
+        card_outer.pack(fill="both", expand=True, padx=26, pady=(0, 22))
+
+        staff_frame = tk.Frame(card, bg=WHITE)
+        id_frame = tk.Frame(card, bg=WHITE)
+
+        tk.Label(staff_frame, text="Username", font=("Segoe UI", 9, "bold"), fg=PRIMARY, bg=WHITE, anchor="w").pack(fill="x")
         username_var = tk.StringVar()
         username_entry = tk.Entry(staff_frame, textvariable=username_var)
         style_entry(username_entry)
-        username_entry.pack(fill="x", pady=(2, 12))
+        username_entry.pack(fill="x", pady=(6, 14))
 
-        # Doctor/Nurse login (numeric ID/password)
-        tk.Label(id_frame, text="ID", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
+        tk.Label(id_frame, text="ID", font=("Segoe UI", 9, "bold"), fg=PRIMARY, bg=WHITE, anchor="w").pack(fill="x")
         login_id_var = tk.StringVar()
         login_id_entry = tk.Entry(id_frame, textvariable=login_id_var)
         style_entry(login_id_entry)
-        login_id_entry.pack(fill="x", pady=(2, 12))
+        login_id_entry.pack(fill="x", pady=(6, 14))
 
-        tk.Label(form, text="Password", font=FONT_SMALL, fg=PRIMARY, bg=BG, anchor="w").pack(fill="x")
+        tk.Label(card, text="Password", font=("Segoe UI", 9, "bold"), fg=PRIMARY, bg=WHITE).pack(fill="x")
         password_var = tk.StringVar()
-        password_entry = tk.Entry(
-            form,
-            textvariable=password_var,
-            show="•",
-        )
+        password_entry = tk.Entry(card, textvariable=password_var, show="•")
         style_entry(password_entry)
-        password_entry.pack(fill="x", pady=(2, 12))
+        password_entry.pack(fill="x", pady=(6, 10))
 
         show_pw_var = tk.BooleanVar(value=False)
-        show_pw = tk.Checkbutton(
-            form,
+        tk.Checkbutton(
+            card,
             text="Show password",
             variable=show_pw_var,
             onvalue=True,
             offvalue=False,
-            bg=BG,
+            bg=WHITE,
             fg=PRIMARY,
-            activebackground=BG,
+            activebackground=WHITE,
             activeforeground=PRIMARY,
             font=("Segoe UI", 9),
-            selectcolor=BG,
+            selectcolor=WHITE,
             cursor="hand2",
             command=lambda: password_entry.configure(show="" if show_pw_var.get() else "•"),
-        )
-        show_pw.pack(anchor="w", pady=(0, 4))
+        ).pack(anchor="w", pady=(0, 10))
 
-        status = tk.Label(win, text="", font=FONT_SMALL, fg=DANGER, bg=BG)
-        status.pack(pady=(6, 0))
+        status = tk.Label(card, text="", font=("Segoe UI", 9), fg=DANGER, bg=WHITE)
+        status.pack(anchor="w", pady=(0, 10))
 
-        hint = tk.Label(
-            win,
-            text="Staff default admin: username admin / password admin123",
-            font=FONT_SMALL,
-            fg=MUTED,
-            bg=BG,
-            justify="center",
-        )
-        hint.pack(pady=(6, 0))
-
-        def update_mode():
-            mode = login_mode.get()
-            status.configure(text="")
-            if mode == "Staff":
-                id_frame.pack_forget()
-                staff_frame.pack(fill="x")
-                username_entry.focus()
-            else:
-                staff_frame.pack_forget()
-                id_frame.pack(fill="x")
-                login_id_entry.focus()
-
-        login_mode.trace_add("write", lambda *_: update_mode())
-        update_mode()
+        if mode == "Staff":
+            tk.Label(
+                card,
+                text="First-time setup: username admin / password admin123",
+                font=("Segoe UI", 9),
+                fg=MUTED,
+                bg=WHITE,
+                wraplength=440,
+                justify="left",
+            ).pack(anchor="w", pady=(0, 14))
+            staff_frame.pack(fill="x")
+            username_entry.focus()
+        else:
+            id_frame.pack(fill="x")
+            login_id_entry.focus()
 
         def do_login():
-            mode = login_mode.get()
             pw = password_var.get()
             if not pw:
                 status.configure(text="Enter your password.")
@@ -322,8 +456,8 @@ class HospitalApp(tk.Tk):
                 if not lid.isdigit():
                     status.configure(text="Enter a numeric ID.")
                     return
-                role = "Doctor" if mode == "Doctor" else "Nurse"
-                user = db.authenticate_by_login_id(role, int(lid), pw)
+                role_map = {"Doctor": "Doctor", "Nurse": "Nurse", "Lab": "Lab"}
+                user = db.authenticate_by_login_id(role_map[mode], int(lid), pw)
 
             if not user:
                 status.configure(text="Invalid credentials (or account disabled).")
@@ -331,26 +465,27 @@ class HospitalApp(tk.Tk):
 
             self.current_user = user
             db.log_audit(user_id=user["id"], username=user["username"], action="LOGIN")
+            outcome["ok"] = True
             win.destroy()
 
-        def cancel():
-            try:
-                win.destroy()
-            finally:
-                self.destroy()
+        def cancel_app():
+            win.destroy()
+            self.destroy()
+            sys.exit(0)
 
-        btn_frame = tk.Frame(win, bg=BG)
-        btn_frame.pack(pady=18)
-        login_btn = tk.Button(btn_frame, text="Login", command=do_login)
+        btn_frame = tk.Frame(card, bg=WHITE)
+        btn_frame.pack(fill="x", pady=(6, 0))
+        login_btn = tk.Button(btn_frame, text="Sign in", command=do_login)
         style_button(login_btn, SUCCESS)
         login_btn.pack(side="left", padx=(0, 10))
-        exit_btn = tk.Button(btn_frame, text="Exit", command=cancel)
+        exit_btn = tk.Button(btn_frame, text="Quit app", command=cancel_app)
         style_button(exit_btn, DANGER)
         exit_btn.pack(side="left")
 
         password_entry.bind("<Return>", lambda e: do_login())
 
         self.wait_window(win)
+        return outcome["ok"]
 
     def _apply_role_nav(self):
         role = (self.current_user or {}).get("role", "")
@@ -358,25 +493,57 @@ class HospitalApp(tk.Tk):
         # Map buttons by their label text.
         btn_map = {b.cget("text"): b for b in getattr(self, "nav_buttons", [])}
 
-        # Default: show the core modules
-        allowed = {"⊞  Dashboard", "👥  Patients", "📅  Appointments", "🔍  Search"}
+        # Default: minimal (lock down by role)
+        allowed = {"⊞  Dashboard"}
 
         # Example stricter roles
         if role == "Doctor":
-            allowed = {"⊞  Dashboard", "👥  Patients"}  # doctor works from patient profiles (encounters, rx, labs, etc.)
+            allowed = {"⊞  Dashboard", "👥  Patients"}
         elif role == "Nurse":
-            allowed = {"⊞  Dashboard", "👥  Patients"}  # nurse focuses on vitals via patient profile
+            allowed = {"⊞  Dashboard", "🩺  Vitals"}
+        elif role == "Lab":
+            allowed = {"⊞  Dashboard", "🧪  Lab Upload"}
         elif role == "Admin":
-            allowed = {"⊞  Dashboard", "👥  Patients", "📅  Appointments", "🔍  Search", "🩺  Encounters", "👨‍⚕️  Doctors", "💳  Billing", "💊  Pharmacy", "🧪  Lab", "⚙  Users"}
+            # Admin manages operations but does NOT access patient list per your requirement.
+            allowed = {"⊞  Dashboard", "👨‍⚕️  Doctors", "💳  Billing", "💊  Pharmacy", "🧪  Lab", "📜  Audit Log", "💾  Backups/Exports", "⚙  Users"}
+        else:
+            # Other staff roles can be added later; keep conservative for now.
+            allowed = {"⊞  Dashboard"}
+
+        # Ensure role-specific nav entries exist
+        if role == "Nurse" and "🩺  Vitals" not in btn_map:
+            btn = tk.Button(self.sidebar, text="🩺  Vitals", command=self.show_vitals_station)
+            style_nav_button(btn, active=False)
+            if hasattr(self, "sidebar_spacer"):
+                btn.pack(fill="x", before=self.sidebar_spacer)
+            else:
+                btn.pack(fill="x")
+            self.nav_buttons.append(btn)
+            btn_map["🩺  Vitals"] = btn
+            if hasattr(self, "_nav_full_text"):
+                self._nav_full_text[btn] = "🩺  Vitals"
+
+        if role == "Lab" and "🧪  Lab Upload" not in btn_map:
+            btn = tk.Button(self.sidebar, text="🧪  Lab Upload", command=self.show_lab_upload)
+            style_nav_button(btn, active=False)
+            if hasattr(self, "sidebar_spacer"):
+                btn.pack(fill="x", before=self.sidebar_spacer)
+            else:
+                btn.pack(fill="x")
+            self.nav_buttons.append(btn)
+            btn_map["🧪  Lab Upload"] = btn
+            if hasattr(self, "_nav_full_text"):
+                self._nav_full_text[btn] = "🧪  Lab Upload"
 
         # Ensure admin has user management entry
         if role == "Admin":
             admin_entries = [
-                ("🩺  Encounters", self.show_encounters),
                 ("👨‍⚕️  Doctors", self.show_doctors),
                 ("💳  Billing", self.show_billing),
                 ("💊  Pharmacy", self.show_pharmacy),
                 ("🧪  Lab", self.show_lab),
+                ("📜  Audit Log", self.show_audit_log),
+                ("💾  Backups/Exports", self.show_backups_exports),
                 ("⚙  Users", self.show_users),
             ]
             for label_text, command in admin_entries:
@@ -484,6 +651,10 @@ class HospitalApp(tk.Tk):
         now = datetime.now().strftime("%A, %d %B %Y")
         self.user_badge = tk.Label(topbar, text="", font=("Segoe UI", 9, "bold"), fg=PRIMARY, bg=WHITE)
         self.user_badge.pack(side="right", padx=(0, 24))
+        self.logout_btn = tk.Button(topbar, text="Logout", command=self.logout)
+        style_button(self.logout_btn, WHITE, fg=PRIMARY)
+        self.logout_btn.configure(activebackground="#eef4fb", activeforeground=PRIMARY)
+        self.logout_btn.pack(side="right", padx=(0, 10), pady=12)
         tk.Label(topbar, text=now, font=FONT_SMALL, fg=MUTED, bg=WHITE).pack(side="right", padx=(0, 14))
 
         # Content frame
@@ -600,6 +771,25 @@ class HospitalApp(tk.Tk):
     def _toggle_sidebar(self):
         self._set_sidebar_collapsed(not self.sidebar_collapsed)
 
+    def logout(self):
+        """Log out current user and return to login page."""
+        if self.current_user:
+            try:
+                db.log_audit(self.current_user["id"], self.current_user["username"], "LOGOUT")
+            except Exception:
+                pass
+        self.current_user = None
+        self.active_page = None
+        # Tear down UI and restart login + layout
+        self.withdraw()
+        for w in self.winfo_children():
+            w.destroy()
+        self._require_login()
+        self._build_layout()
+        self._apply_role_nav()
+        self.deiconify()
+        self.show_dashboard()
+
     def _set_sidebar_collapsed(self, collapsed: bool):
         self.sidebar_collapsed = collapsed
         self.sidebar.configure(width=72 if collapsed else 220)
@@ -637,6 +827,7 @@ class HospitalApp(tk.Tk):
         self._set_active_nav("⊞  Dashboard")
         if hasattr(self, "user_badge") and self.current_user:
             self.user_badge.configure(text=f"{self.current_user['username']} • {self.current_user['role']}")
+        role = (self.current_user or {}).get("role", "")
         stats = db.get_stats()
 
         def bind_click_recursive(widget, callback):
@@ -648,12 +839,28 @@ class HospitalApp(tk.Tk):
         cards_frame = tk.Frame(self.content, bg=BG)
         cards_frame.pack(fill="x", pady=(0, 20))
 
-        card_data = [
-            ("Total Patients",     str(stats["total"]),               PRIMARY,  "👥", lambda: self.show_patients("All")),
-            ("Active Patients",    str(stats["active"]),              SUCCESS,  "✅", lambda: self.show_patients("Active")),
-            ("Discharged",         str(stats["discharged"]),          MUTED,    "🏠", lambda: self.show_patients("Discharged")),
-            ("Appointments Today", str(stats["today_appointments"]),  ACCENT,   "📅", self.show_appointments),
-        ]
+        if role == "Admin":
+            kpi = db.get_admin_kpis()
+            card_data = [
+                ("Patients registered", str(kpi["patients_registered"]), PRIMARY, "👥", None),
+                ("Appointments today", str(kpi["appointments_today"]), ACCENT, "📅", None),
+                ("Unpaid invoices", str(kpi["unpaid_invoice_count"]), DANGER, "💳", self.show_billing),
+                ("Low-stock SKUs", str(kpi["low_stock_skus"]), SECONDARY, "💊", self.show_pharmacy),
+            ]
+        elif role == "Doctor":
+            card_data = [
+                ("Total Patients",     str(stats["total"]),               PRIMARY,  "👥", lambda: self.show_patients("All")),
+                ("Active Patients",    str(stats["active"]),              SUCCESS,  "✅", lambda: self.show_patients("Active")),
+                ("Discharged",         str(stats["discharged"]),          MUTED,    "🏠", lambda: self.show_patients("Discharged")),
+                ("Appointments Today", str(stats["today_appointments"]),  ACCENT,   "📅", self.show_appointments),
+            ]
+        else:
+            card_data = [
+                ("Patients registered", str(stats["total"]), PRIMARY, "👥", None),
+                ("Active patients", str(stats["active"]), SUCCESS, "✅", None),
+                ("Discharged", str(stats["discharged"]), MUTED, "🏠", None),
+                ("Appointments today", str(stats["today_appointments"]), ACCENT, "📅", None),
+            ]
 
         for i, (title, value, color, icon, on_click) in enumerate(card_data):
             card_outer, card = surface(cards_frame, bg=WHITE, pad=18)
@@ -664,43 +871,116 @@ class HospitalApp(tk.Tk):
             tk.Label(card, text=value, font=("Segoe UI", 26, "bold"), fg=color, bg=WHITE).pack(anchor="w")
             tk.Label(card, text=title, font=FONT_SMALL, fg=MUTED, bg=WHITE).pack(anchor="w")
 
-            # Make the card act like a shortcut
-            card_outer.configure(cursor="hand2")
-            card.configure(cursor="hand2")
-            bind_click_recursive(card_outer, on_click)
+            if on_click:
+                card_outer.configure(cursor="hand2")
+                card.configure(cursor="hand2")
+                bind_click_recursive(card_outer, on_click)
+            else:
+                card_outer.configure(cursor="arrow")
+                card.configure(cursor="arrow")
 
-        # Recent patients table
-        tk.Label(self.content, text="Recent Patients", font=FONT_HEAD,
-                 fg=PRIMARY, bg=BG).pack(anchor="w", pady=(8, 10))
+        if role == "Doctor":
+            # Recent patients table (doctor only)
+            tk.Label(self.content, text="Recent Patients", font=FONT_HEAD,
+                     fg=PRIMARY, bg=BG).pack(anchor="w", pady=(8, 10))
+            self._render_patient_table(self.content, db.get_all_patients()[:8])
+        elif role == "Admin":
+            kpi = db.get_admin_kpis()
+            outer, panel = surface(self.content, bg=WHITE, pad=18)
+            outer.pack(fill="x", pady=(10, 0))
+            tk.Label(panel, text="Operations overview", font=("Segoe UI", 13, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w")
+            tk.Label(
+                panel,
+                text=(
+                    f"Outstanding balance across unpaid invoices: {kpi['outstanding_total']:.2f}  •  "
+                    f"Lab orders pending (Ordered / In progress): {kpi['lab_orders_pending']}"
+                ),
+                font=("Segoe UI", 10),
+                fg=MUTED,
+                bg=WHITE,
+                wraplength=900,
+                justify="left",
+            ).pack(anchor="w", pady=(8, 4))
+            tk.Label(
+                panel,
+                text="Clinical patient records are only available to Doctors. Use Billing, Pharmacy, Lab, and Audit Log from the sidebar.",
+                font=("Segoe UI", 10),
+                fg=PRIMARY,
+                bg=WHITE,
+                wraplength=900,
+                justify="left",
+            ).pack(anchor="w", pady=(4, 0))
 
-        self._render_patient_table(self.content, db.get_all_patients()[:8])
+            snap_outer, snap = surface(self.content, bg=WHITE, pad=14)
+            snap_outer.pack(fill="both", expand=True, pady=(14, 0))
+            tk.Label(snap, text="Recent audit activity", font=("Segoe UI", 11, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w", pady=(0, 8))
+            cols = ("Time", "User", "Action", "Details")
+            tree = ttk.Treeview(snap, columns=cols, show="headings", height=8)
+            for c, w in zip(cols, [160, 120, 160, 420]):
+                tree.heading(c, text=c)
+                tree.column(c, width=w, anchor="w")
+            sb = ttk.Scrollbar(snap, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=sb.set)
+            tree.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+            for row in db.get_audit_logs(40):
+                ts, uname, action, etype, eid, details = row
+                detail_short = (details or "")[:180]
+                tree.insert("", "end", values=(ts, uname, action, detail_short))
+            foot = tk.Frame(snap, bg=WHITE)
+            foot.pack(fill="x", pady=(10, 0))
+            more = tk.Button(foot, text="Open full Audit Log →", command=self.show_audit_log)
+            style_button(more, SECONDARY)
+            more.pack(side="left")
+        else:
+            outer, panel = surface(self.content, bg=WHITE, pad=18)
+            outer.pack(fill="x", pady=(10, 0))
+            tk.Label(panel, text="Welcome", font=("Segoe UI", 13, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w")
+            tk.Label(
+                panel,
+                text="Use the left menu to access your assigned workflow.",
+                font=("Segoe UI", 10),
+                fg=MUTED,
+                bg=WHITE,
+            ).pack(anchor="w", pady=(6, 0))
 
         # Quick action buttons
         btn_frame = tk.Frame(self.content, bg=BG)
         btn_frame.pack(fill="x", pady=(16, 0))
-        add_btn = tk.Button(btn_frame, text="+ Register New Patient",
-                            command=self.open_add_patient, **{})
-        style_button(add_btn, PRIMARY)
-        add_btn.pack(side="left", padx=(0, 10))
+        if role == "Doctor":
+            add_btn = tk.Button(btn_frame, text="+ Register New Patient",
+                                command=self.open_add_patient, **{})
+            style_button(add_btn, PRIMARY)
+            add_btn.pack(side="left", padx=(0, 10))
 
-        appt_btn = tk.Button(btn_frame, text="📅 Book Appointment",
-                             command=self.open_add_appointment)
-        style_button(appt_btn, SECONDARY)
-        appt_btn.pack(side="left")
+            appt_btn = tk.Button(btn_frame, text="📅 Book Appointment",
+                                 command=self.open_add_appointment)
+            style_button(appt_btn, SECONDARY)
+            appt_btn.pack(side="left")
 
-        backup_btn = tk.Button(btn_frame, text="💾 Backup Database", command=self.backup_database)
-        style_button(backup_btn, ACCENT, fg=PRIMARY)
-        backup_btn.pack(side="right")
+        if role == "Admin":
+            backup_btn = tk.Button(btn_frame, text="💾 Backup Database", command=self.backup_database)
+            style_button(backup_btn, ACCENT, fg=PRIMARY)
+            backup_btn.pack(side="right")
 
-        export_btn = tk.Button(btn_frame, text="⬇ Export CSV", command=self.open_export_menu)
-        style_button(export_btn, WHITE, fg=PRIMARY)
-        export_btn.configure(activebackground="#eef4fb", activeforeground=PRIMARY)
-        export_btn.pack(side="right", padx=(0, 10))
+            export_btn = tk.Button(btn_frame, text="⬇ Export CSV", command=self.open_export_menu)
+            style_button(export_btn, WHITE, fg=PRIMARY)
+            export_btn.configure(activebackground="#eef4fb", activeforeground=PRIMARY)
+            export_btn.pack(side="right", padx=(0, 10))
+
+            hub_btn = tk.Button(btn_frame, text="💾 Backups / Exports hub", command=self.show_backups_exports)
+            style_button(hub_btn, SECONDARY)
+            hub_btn.pack(side="right", padx=(0, 10))
 
     # ══════════════════════════
     #  PATIENTS PAGE
     # ══════════════════════════
     def show_patients(self, initial_filter: str = "All"):
+        role = (self.current_user or {}).get("role", "")
+        if role != "Doctor":
+            messagebox.showwarning("Access Denied", "Only Doctors can access the Patients list.")
+            self.show_dashboard()
+            return
         self.clear_content()
         self.set_title("Patients")
         self._set_active_nav("👥  Patients")
@@ -1139,7 +1419,8 @@ class HospitalApp(tk.Tk):
     def open_add_encounter(self, patient_id: int, refresh_callback=None):
         win = tk.Toplevel(self)
         win.title("New Encounter")
-        win.geometry("520x520")
+        # Make sure the create button is visible on all screens
+        win.geometry("520x640")
         win.configure(bg=BG)
         win.resizable(False, False)
         win.grab_set()
@@ -1182,9 +1463,11 @@ class HospitalApp(tk.Tk):
                 refresh_callback()
             win.destroy()
 
-        btn = tk.Button(win, text="Create Encounter", command=submit)
+        btn_row = tk.Frame(win, bg=BG)
+        btn_row.pack(fill="x", pady=(0, 16))
+        btn = tk.Button(btn_row, text="Create Encounter", command=submit)
         style_button(btn, PRIMARY)
-        btn.pack(pady=(0, 16))
+        btn.pack()
 
     def open_add_vitals(self, encounter_id: int, refresh_callback=None):
         win = tk.Toplevel(self)
@@ -1632,6 +1915,94 @@ class HospitalApp(tk.Tk):
         r_btn = tk.Button(btn_frame, text="Reset Password", command=reset_password)
         style_button(r_btn, PRIMARY)
         r_btn.pack(side="left")
+
+    def show_audit_log(self):
+        self.clear_content()
+        self.set_title("Audit Log")
+        self._set_active_nav("📜  Audit Log")
+        if hasattr(self, "user_badge") and self.current_user:
+            self.user_badge.configure(text=f"{self.current_user['username']} • {self.current_user['role']}")
+
+        if not self.current_user or self.current_user.get("role") != "Admin":
+            messagebox.showwarning("Access Denied", "Only Admin can view the audit log.")
+            self.show_dashboard()
+            return
+
+        bar = tk.Frame(self.content, bg=BG)
+        bar.pack(fill="x", pady=(0, 14))
+        tk.Label(bar, text="Search:", font=FONT_SMALL, bg=BG, fg=MUTED).pack(side="left", padx=(0, 8))
+        search_var = tk.StringVar()
+
+        frame_outer, frame = surface(self.content, bg=WHITE, pad=10)
+        frame_outer.pack(fill="both", expand=True)
+
+        cols = ("Time", "User", "Action", "Entity", "ID", "Details")
+        tree = ttk.Treeview(frame, columns=cols, show="headings", selectmode="browse")
+        widths = [150, 110, 140, 90, 60, 380]
+        for col, w in zip(cols, widths):
+            tree.heading(col, text=col)
+            anchor = "w" if col in ("User", "Details", "Action") else "center"
+            tree.column(col, width=w, anchor=anchor)
+
+        sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        def refresh():
+            for i in tree.get_children():
+                tree.delete(i)
+            q = search_var.get().strip()
+            for row in db.get_audit_logs_filtered(q, limit=600):
+                ts, uname, action, etype, eid, details = row
+                eid_disp = "" if eid is None or eid == "" else str(eid)
+                tree.insert("", "end", values=(ts, uname, action, etype or "", eid_disp, details or ""))
+
+        search_entry = tk.Entry(bar, textvariable=search_var, width=36)
+        style_entry(search_entry)
+        search_entry.pack(side="left")
+        search_btn = tk.Button(bar, text="Apply", command=refresh)
+        style_button(search_btn, SECONDARY)
+        search_btn.pack(side="left", padx=(10, 0))
+        search_var.trace_add("write", lambda *_: refresh())
+        refresh()
+
+    def show_backups_exports(self):
+        self.clear_content()
+        self.set_title("Backups / Exports")
+        self._set_active_nav("💾  Backups/Exports")
+        if hasattr(self, "user_badge") and self.current_user:
+            self.user_badge.configure(text=f"{self.current_user['username']} • {self.current_user['role']}")
+
+        if not self.current_user or self.current_user.get("role") != "Admin":
+            messagebox.showwarning("Access Denied", "Only Admin can access backups and exports.")
+            self.show_dashboard()
+            return
+
+        outer, panel = surface(self.content, bg=WHITE, pad=22)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(panel, text="Data protection", font=("Segoe UI", 14, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w")
+        tk.Label(
+            panel,
+            text="Backups are stored under the project folder in backups/. CSV exports go to exports/.",
+            font=("Segoe UI", 10),
+            fg=MUTED,
+            bg=WHITE,
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 20))
+
+        row = tk.Frame(panel, bg=WHITE)
+        row.pack(fill="x", pady=(0, 12))
+
+        b1 = tk.Button(row, text="💾 Backup database now", command=self.backup_database)
+        style_button(b1, ACCENT, fg=PRIMARY)
+        b1.pack(side="left", padx=(0, 12))
+
+        b2 = tk.Button(row, text="⬇ Export CSV…", command=self.open_export_menu)
+        style_button(b2, SECONDARY)
+        b2.pack(side="left")
 
     def open_add_user(self):
         win = tk.Toplevel(self)
@@ -2225,6 +2596,101 @@ class HospitalApp(tk.Tk):
         btn_row.pack(fill="x", pady=(10, 0))
         tip = tk.Label(btn_row, text="Create invoices from a Patient Profile → Billing tab.", bg=BG, fg=MUTED, font=FONT_SMALL)
         tip.pack(side="left")
+
+    # ══════════════════════════
+    #  NURSE VITALS STATION
+    # ══════════════════════════
+    def show_vitals_station(self):
+        self.clear_content()
+        self.set_title("Vitals")
+        self._set_active_nav("🩺  Vitals")
+        if hasattr(self, "user_badge") and self.current_user:
+            self.user_badge.configure(text=f"{self.current_user['username']} • {self.current_user['role']}")
+
+        outer, panel = surface(self.content, bg=WHITE, pad=18)
+        outer.pack(fill="x")
+        tk.Label(panel, text="Record Vitals", font=("Segoe UI", 14, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w")
+        tk.Label(panel, text="Enter Patient ID to record vitals (Nurse).", font=("Segoe UI", 10), fg=MUTED, bg=WHITE).pack(anchor="w", pady=(4, 12))
+
+        row = tk.Frame(panel, bg=WHITE)
+        row.pack(fill="x")
+        pid = tk.Entry(row, width=20)
+        style_entry(pid)
+        pid.pack(side="left")
+
+        def go():
+            v = pid.get().strip()
+            if not v.isdigit():
+                messagebox.showwarning("Invalid", "Enter a numeric patient ID.")
+                return
+            self.open_patient_profile(int(v))
+
+        btn = tk.Button(row, text="Open", command=go)
+        style_button(btn, PRIMARY)
+        btn.pack(side="left", padx=(10, 0))
+
+    # ══════════════════════════
+    #  LAB UPLOAD (LAB ROLE)
+    # ══════════════════════════
+    def show_lab_upload(self):
+        self.clear_content()
+        self.set_title("Lab Upload")
+        self._set_active_nav("🧪  Lab Upload")
+        if hasattr(self, "user_badge") and self.current_user:
+            self.user_badge.configure(text=f"{self.current_user['username']} • {self.current_user['role']}")
+
+        outer, panel = surface(self.content, bg=WHITE, pad=18)
+        outer.pack(fill="both", expand=True)
+        tk.Label(panel, text="Upload Lab Result", font=("Segoe UI", 14, "bold"), fg=PRIMARY, bg=WHITE).pack(anchor="w")
+        tk.Label(panel, text="Enter Patient ID, test name, and result. It will attach to the latest encounter.", font=("Segoe UI", 10), fg=MUTED, bg=WHITE).pack(anchor="w", pady=(4, 12))
+
+        def field(lbl):
+            tk.Label(panel, text=lbl, bg=WHITE, fg=PRIMARY, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            e = tk.Entry(panel)
+            style_entry(e)
+            e.pack(fill="x", pady=(4, 10))
+            return e
+
+        patient_id_e = field("Patient ID")
+        test_name_e = field("Test name")
+        tk.Label(panel, text="Priority", bg=WHITE, fg=PRIMARY, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        pr = tk.StringVar(value="Routine")
+        pr_combo = ttk.Combobox(panel, textvariable=pr, values=["Routine", "Urgent"], state="readonly")
+        pr_combo.pack(fill="x", pady=(4, 10))
+
+        tk.Label(panel, text="Result text", bg=WHITE, fg=PRIMARY, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        result = tk.Text(panel, height=10, font=("Segoe UI", 10), bg=WHITE, fg=PRIMARY, relief="flat", highlightbackground=PANEL_BORDER, highlightthickness=1)
+        result.pack(fill="both", expand=True, pady=(4, 10))
+
+        def submit():
+            pid_txt = patient_id_e.get().strip()
+            if not pid_txt.isdigit():
+                messagebox.showwarning("Invalid", "Patient ID must be numeric.")
+                return
+            pid_i = int(pid_txt)
+            if not db.patient_exists(pid_i):
+                messagebox.showwarning("Not found", f"Patient ID {pid_i} does not exist.")
+                return
+            test = test_name_e.get().strip()
+            if not test:
+                messagebox.showwarning("Missing", "Test name is required.")
+                return
+            enc_id = db.get_latest_encounter_id_for_patient(pid_i)
+            if not enc_id:
+                messagebox.showwarning("No encounter", "This patient has no encounters yet. A doctor must create an encounter first.")
+                return
+            oid = db.add_lab_order(enc_id, test, pr.get())
+            db.set_lab_result(oid, result.get("1.0", "end").strip())
+            if self.current_user:
+                db.log_audit(self.current_user["id"], self.current_user["username"], "LAB_UPLOAD", "lab_orders", oid, f"patient_id={pid_i} test={test}")
+            messagebox.showinfo("Saved", f"Lab result uploaded (Order {oid}).")
+            patient_id_e.delete(0, "end")
+            test_name_e.delete(0, "end")
+            result.delete("1.0", "end")
+
+        btn = tk.Button(panel, text="Upload Result", command=submit)
+        style_button(btn, PRIMARY)
+        btn.pack(anchor="w", pady=(6, 0))
 
     # ══════════════════════════
     #  ADD PATIENT MODAL
