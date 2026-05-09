@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import datetime
 import os
+import re
 import hashlib
 import hmac
 from typing import Optional, List, Dict, Any
@@ -27,8 +28,11 @@ def initialize_db():
             username      TEXT NOT NULL UNIQUE,
             full_name     TEXT,
             role          TEXT NOT NULL,
-            login_id      INTEGER UNIQUE, -- optional numeric login for Doctor/Nurse
-            doctor_id     INTEGER,        -- optional link to doctors(id) for Doctor role
+            login_id      INTEGER UNIQUE,
+            doctor_id     INTEGER,
+            email         TEXT NOT NULL DEFAULT '',
+            phone         TEXT NOT NULL DEFAULT '',
+            must_change_password INTEGER NOT NULL DEFAULT 0,
             password_hash BLOB NOT NULL,
             salt          BLOB NOT NULL,
             active        INTEGER NOT NULL DEFAULT 1,
@@ -37,7 +41,7 @@ def initialize_db():
         )
     """)
 
-    # ── Migration: add login_id / doctor_id to existing users table ──
+    # ── Migration: add login_id / doctor_id / contact / first-login flag ──
     cursor.execute("PRAGMA table_info(users)")
     user_cols = {row[1] for row in cursor.fetchall()}
     if "login_id" not in user_cols:
@@ -45,6 +49,12 @@ def initialize_db():
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id);")
     if "doctor_id" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN doctor_id INTEGER;")
+    if "email" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';")
+    if "phone" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT '';")
+    if "must_change_password" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -61,17 +71,43 @@ def initialize_db():
     """)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS patients (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT NOT NULL,
-            age         INTEGER NOT NULL,
-            gender      TEXT NOT NULL,
-            contact     TEXT NOT NULL,
-            condition   TEXT NOT NULL,
-            status      TEXT DEFAULT 'Active',
-            registered  TEXT DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS password_reset_requests (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            role                 TEXT NOT NULL,
+            login_id             INTEGER NOT NULL,
+            notes                TEXT,
+            status               TEXT NOT NULL DEFAULT 'pending',
+            resolved_ts          TEXT,
+            resolved_by_user_id  INTEGER,
+            matched_user_id      INTEGER,
+            FOREIGN KEY (matched_user_id) REFERENCES users(id),
+            FOREIGN KEY (resolved_by_user_id) REFERENCES users(id)
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS patients (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                TEXT NOT NULL,
+            age                 INTEGER NOT NULL,
+            gender              TEXT NOT NULL,
+            contact             TEXT NOT NULL,
+            condition           TEXT NOT NULL,
+            status              TEXT DEFAULT 'Active',
+            registered          TEXT DEFAULT CURRENT_TIMESTAMP,
+            hospital_card_number TEXT
+        )
+    """)
+
+    cursor.execute("PRAGMA table_info(patients)")
+    patient_cols = {row[1] for row in cursor.fetchall()}
+    if "hospital_card_number" not in patient_cols:
+        cursor.execute("ALTER TABLE patients ADD COLUMN hospital_card_number TEXT;")
+
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_hospital_card ON patients(hospital_card_number)"
+    )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS appointments (
@@ -291,6 +327,7 @@ def initialize_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username       ON users(username);")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_id ON users(login_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts             ON audit_log(ts);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_status       ON password_reset_requests(status);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_doctors_active       ON doctors(active);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_encounters_patient   ON encounters(patient_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_encounters_status    ON encounters(status);")
@@ -309,8 +346,23 @@ def initialize_db():
             password="admin123",
             role="Admin",
             full_name="System Administrator",
+            login_id=1,
+            email="",
+            phone="",
+            must_change_password=False,
             created_by_user=None,
         )
+
+    # Legacy DBs: every account must have a unique numeric staff login_id.
+    cursor.execute("SELECT id FROM users WHERE login_id IS NULL ORDER BY id")
+    missing_ids = [row[0] for row in cursor.fetchall()]
+    if missing_ids:
+        cursor.execute("SELECT COALESCE(MAX(login_id), 0) FROM users WHERE login_id IS NOT NULL")
+        nxt = int(cursor.fetchone()[0]) + 1
+        for uid in missing_ids:
+            cursor.execute("UPDATE users SET login_id = ? WHERE id = ?", (nxt, uid))
+            nxt += 1
+        conn.commit()
 
     conn.close()
 
@@ -319,17 +371,87 @@ def initialize_db():
 def _hash_password(password: str, salt: bytes) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
 
-def create_user(username: str, password: str, role: str, full_name: str = "", created_by_user=None):
+
+def count_registered_staff(active_only: bool = True) -> int:
+    """Hospital staff only — excludes system Administrator accounts."""
+    conn = connect()
+    cursor = conn.cursor()
+    if active_only:
+        cursor.execute("SELECT COUNT(*) FROM users WHERE active = 1 AND role != 'Admin'")
+    else:
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role != 'Admin'")
+    n = cursor.fetchone()[0]
+    conn.close()
+    return int(n)
+
+
+def generate_unique_staff_username(role: str, login_id: Optional[int], full_name: str = "") -> str:
+    """Internal username slug for audit/UI; staff always sign in with login_id + password."""
+    conn = connect()
+    cursor = conn.cursor()
+
+    def taken(u: str) -> bool:
+        cursor.execute("SELECT 1 FROM users WHERE username = ?", (u,))
+        return cursor.fetchone() is not None
+
+    role_slug = (role or "staff").lower().replace(" ", "_")
+    if login_id is not None:
+        base = f"{role_slug}_{int(login_id)}"
+        candidate = base
+        suffix = 0
+        while taken(candidate):
+            suffix += 1
+            candidate = f"{base}_{suffix}"
+        conn.close()
+        return candidate
+
+    raw = (full_name or "").strip().lower()
+    base_slug = re.sub(r"[^\w]+", "_", raw).strip("_")[:28]
+    if not base_slug:
+        base_slug = role_slug
+    candidate = base_slug
+    suffix = 0
+    while taken(candidate):
+        suffix += 1
+        candidate = f"{base_slug}_{suffix}"
+    conn.close()
+    return candidate
+
+
+def create_user(
+    username: str,
+    password: str,
+    role: str,
+    full_name: str = "",
+    login_id: Optional[int] = None,
+    email: str = "",
+    phone: str = "",
+    must_change_password: bool = False,
+    created_by_user=None,
+):
     salt = os.urandom(16)
     pw_hash = _hash_password(password, salt)
     conn = connect()
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO users (username, full_name, role, password_hash, salt, active)
-        VALUES (?, ?, ?, ?, ?, 1)
+        INSERT INTO users (
+            username, full_name, role, login_id, email, phone,
+            must_change_password, password_hash, salt, active
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """,
-        (username.strip(), full_name.strip() if full_name else None, role, pw_hash, salt),
+        (
+            username.strip(),
+            full_name.strip() if full_name else None,
+            role,
+            login_id,
+            (email or "").strip(),
+            (phone or "").strip(),
+            1 if must_change_password else 0,
+            pw_hash,
+            salt,
+        ),
     )
     uid = cursor.lastrowid
     conn.commit()
@@ -341,16 +463,48 @@ def create_user(username: str, password: str, role: str, full_name: str = "", cr
             action="CREATE_USER",
             entity_type="users",
             entity_id=uid,
-            details=f"Created user '{username}' with role '{role}'",
+            details=f"Created user '{username}' role '{role}' login_id={login_id} email={(email or '').strip()[:48]}",
         )
     return uid
+
+
+def _session_core_from_sql_row(row: tuple) -> Dict[str, Any]:
+    """Map SELECT columns (no password fields) to session dict."""
+    uid, uname, full_name, role, lid, doctor_id, email, phone, mcp = row
+    return {
+        "id": uid,
+        "username": uname,
+        "full_name": full_name or "",
+        "role": role,
+        "login_id": lid,
+        "doctor_id": doctor_id,
+        "email": email or "",
+        "phone": phone or "",
+        "must_change_password": bool(mcp),
+    }
+
+
+def get_user_session(user_id: int) -> Optional[Dict[str, Any]]:
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, username, full_name, role, login_id, doctor_id, email, phone, must_change_password
+        FROM users WHERE id = ?
+        """,
+        (int(user_id),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return _session_core_from_sql_row(row) if row else None
+
 
 def get_users():
     conn = connect()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, username, full_name, role, login_id, active, created_at
+        SELECT id, username, full_name, role, login_id, active, created_at, email, phone, must_change_password
         FROM users ORDER BY created_at DESC
         """
     )
@@ -359,11 +513,13 @@ def get_users():
     return rows
 
 def authenticate(username: str, password: str):
+    """Legacy username lookup — prefer authenticate_by_staff_id for interactive login."""
     conn = connect()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, username, full_name, role, login_id, doctor_id, password_hash, salt, active
+        SELECT id, username, full_name, role, login_id, doctor_id, email, phone, must_change_password,
+               password_hash, salt, active
         FROM users
         WHERE username = ?
         """,
@@ -373,36 +529,48 @@ def authenticate(username: str, password: str):
     conn.close()
     if not row:
         return None
-    uid, uname, full_name, role, login_id, doctor_id, pw_hash, salt, active = row
+    uid, uname, full_name, role, login_id, doctor_id, email, phone, mcp, pw_hash, salt, active = row
     if not active:
         return None
     candidate = _hash_password(password, salt)
     if not hmac.compare_digest(pw_hash, candidate):
         return None
-    return {"id": uid, "username": uname, "full_name": full_name or "", "role": role, "login_id": login_id, "doctor_id": doctor_id}
+    base = _session_core_from_sql_row((uid, uname, full_name, role, login_id, doctor_id, email, phone, mcp))
+    return base
 
-def authenticate_by_login_id(role: str, login_id: int, password: str):
+
+def authenticate_by_staff_id(login_id: int, password: str):
+    """All hospital staff sign in with unique numeric staff ID + password."""
     conn = connect()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, username, full_name, role, login_id, doctor_id, password_hash, salt, active
+        SELECT id, username, full_name, role, login_id, doctor_id, email, phone, must_change_password,
+               password_hash, salt, active
         FROM users
-        WHERE login_id = ? AND role = ?
+        WHERE login_id = ?
         """,
-        (int(login_id), role),
+        (int(login_id),),
     )
     row = cursor.fetchone()
     conn.close()
     if not row:
         return None
-    uid, uname, full_name, role, login_id, doctor_id, pw_hash, salt, active = row
+    uid, uname, full_name, role, lid, doctor_id, email, phone, mcp, pw_hash, salt, active = row
     if not active:
         return None
     candidate = _hash_password(password, salt)
     if not hmac.compare_digest(pw_hash, candidate):
         return None
-    return {"id": uid, "username": uname, "full_name": full_name or "", "role": role, "login_id": login_id, "doctor_id": doctor_id}
+    return _session_core_from_sql_row((uid, uname, full_name, role, lid, doctor_id, email, phone, mcp))
+
+
+def authenticate_by_login_id(role: str, login_id: int, password: str):
+    """Verify password for a staff ID when the portal role must match (same as staff login + role check)."""
+    user = authenticate_by_staff_id(login_id, password)
+    if not user or user.get("role") != role:
+        return None
+    return user
 
 def set_user_login_id(user_id: int, login_id: Optional[int], doctor_id: Optional[int] = None):
     conn = connect()
@@ -416,7 +584,10 @@ def set_user_password(user_id: int, new_password: str, changed_by_user=None):
     pw_hash = _hash_password(new_password, salt)
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?", (pw_hash, salt, user_id))
+    cursor.execute(
+        "UPDATE users SET password_hash = ?, salt = ?, must_change_password = 0 WHERE id = ?",
+        (pw_hash, salt, user_id),
+    )
     conn.commit()
     conn.close()
     if changed_by_user:
@@ -445,6 +616,50 @@ def set_user_active(user_id: int, active: bool, changed_by_user=None):
             details=f"Set active={bool(active)}",
         )
 
+
+def delete_user(user_id: int, deleted_by_user=None):
+    """Permanently remove a hospital staff user. Clears FK references; cannot delete Admin."""
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, role, username, full_name, login_id FROM users WHERE id = ?",
+        (int(user_id),),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("User not found.")
+    _uid, role, uname, full_name, lid = row
+    if role == "Admin":
+        conn.close()
+        raise ValueError("Administrator accounts cannot be deleted.")
+    cursor.execute("UPDATE audit_log SET user_id = NULL WHERE user_id = ?", (int(user_id),))
+    cursor.execute(
+        "UPDATE password_reset_requests SET matched_user_id = NULL WHERE matched_user_id = ?",
+        (int(user_id),),
+    )
+    cursor.execute(
+        "UPDATE password_reset_requests SET resolved_by_user_id = NULL WHERE resolved_by_user_id = ?",
+        (int(user_id),),
+    )
+    cursor.execute(
+        "UPDATE inventory_movements SET user_id = NULL WHERE user_id = ?",
+        (int(user_id),),
+    )
+    cursor.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
+    conn.commit()
+    conn.close()
+    if deleted_by_user:
+        lid_disp = str(lid) if lid is not None else ""
+        log_audit(
+            user_id=deleted_by_user["id"],
+            username=deleted_by_user["username"],
+            action="DELETE_USER",
+            entity_type="users",
+            entity_id=int(user_id),
+            details=f"Deleted '{uname}' role={role} login_id={lid_disp} name={(full_name or '')[:80]}",
+        )
+
 # ── AUDIT LOG ──
 
 def log_audit(user_id, username, action, entity_type=None, entity_id=None, details=None):
@@ -461,30 +676,79 @@ def log_audit(user_id, username, action, entity_type=None, entity_id=None, detai
     conn.close()
 
 
-def record_login_password_reset_request(role: str, login_id: int, notes: str = "") -> None:
-    """Log a self-service password reset request for Doctor/Nurse/Lab login IDs (audit trail for staff)."""
+def record_login_password_reset_request(login_id: int, notes: str = "") -> None:
+    """Queue + audit a password reset request using staff login ID (any role)."""
     conn = connect()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, username FROM users WHERE login_id = ? AND role = ?",
-        (int(login_id), role),
+        "SELECT id, username, role FROM users WHERE login_id = ?",
+        (int(login_id),),
     )
     row = cursor.fetchone()
-    conn.close()
     uid = row[0] if row else None
     uname = row[1] if row else None
-    parts = [f"role={role}", f"login_id={login_id}"]
+    role_str = row[2] if row else "Unknown"
+    note_clean = (notes or "").strip() or None
+    cursor.execute(
+        """
+        INSERT INTO password_reset_requests (role, login_id, notes, status, matched_user_id)
+        VALUES (?, ?, ?, 'pending', ?)
+        """,
+        (role_str, int(login_id), note_clean, uid),
+    )
+    conn.commit()
+    conn.close()
+    parts = [f"role={role_str}", f"login_id={login_id}"]
     parts.append(f"matched_user={uname}" if uname else "matched_user=(none)")
-    if (notes or "").strip():
-        parts.append(f"note={(notes or '').strip()}")
+    if note_clean:
+        parts.append(f"note={note_clean}")
     log_audit(
         user_id=uid,
-        username=uname or f"{role}:{login_id}",
+        username=uname or f"{role_str}:{login_id}",
         action="PASSWORD_RESET_REQUEST",
         entity_type="users",
         entity_id=uid,
         details="; ".join(parts),
     )
+
+
+def list_pending_password_reset_requests():
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT r.id, r.ts, r.role, r.login_id, COALESCE(r.notes, ''),
+               r.matched_user_id, COALESCE(u.username, '')
+        FROM password_reset_requests r
+        LEFT JOIN users u ON u.id = r.matched_user_id
+        WHERE r.status = 'pending'
+        ORDER BY r.ts DESC
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def update_password_reset_request_status(
+    request_id: int, status: str, resolved_by_user_id: Optional[int] = None
+) -> bool:
+    if status not in ("completed", "dismissed"):
+        raise ValueError("status must be 'completed' or 'dismissed'")
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE password_reset_requests
+        SET status = ?, resolved_ts = CURRENT_TIMESTAMP, resolved_by_user_id = ?
+        WHERE id = ? AND status = 'pending'
+        """,
+        (status, resolved_by_user_id, int(request_id)),
+    )
+    conn.commit()
+    changed = cursor.rowcount > 0
+    conn.close()
+    return changed
 
 
 def get_audit_logs(limit: int = 200):
@@ -535,22 +799,42 @@ def get_audit_logs_filtered(search: str = "", limit: int = 500):
 
 # ── PATIENT OPERATIONS ──
 
-def add_patient(name, age, gender, contact, condition):
+def add_patient(name, age, gender, contact, condition, hospital_card_number: Optional[str] = None):
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO patients (name, age, gender, contact, condition)
-        VALUES (?, ?, ?, ?, ?)
-    """, (name, age, gender, contact, condition))
+    card = (hospital_card_number or "").strip() or None
+    if card:
+        cursor.execute(
+            "SELECT id FROM patients WHERE hospital_card_number = ? LIMIT 1",
+            (card,),
+        )
+        if cursor.fetchone():
+            conn.close()
+            raise ValueError(f"Hospital card number '{card}' is already registered.")
+    cursor.execute(
+        """
+        INSERT INTO patients (name, age, gender, contact, condition, hospital_card_number)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (name, age, gender, contact, condition, card),
+    )
     conn.commit()
     patient_id = cursor.lastrowid
     conn.close()
     return patient_id
 
+
+_PATIENT_SELECT = """
+    SELECT id, name, age, gender, contact, condition, status, registered,
+           hospital_card_number
+    FROM patients
+"""
+
+
 def get_all_patients():
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM patients ORDER BY registered DESC")
+    cursor.execute(_PATIENT_SELECT + " ORDER BY registered DESC")
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -558,7 +842,7 @@ def get_all_patients():
 def get_active_patients():
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM patients WHERE status = 'Active' ORDER BY registered DESC")
+    cursor.execute(_PATIENT_SELECT + " WHERE status = 'Active' ORDER BY registered DESC")
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -566,14 +850,44 @@ def get_active_patients():
 def search_patients(query):
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT * FROM patients
-        WHERE name LIKE ? OR CAST(id AS TEXT) LIKE ?
+    q = f"%{(query or '').strip()}%"
+    cursor.execute(
+        _PATIENT_SELECT
+        + """ WHERE name LIKE ? OR CAST(id AS TEXT) LIKE ?
+               OR COALESCE(hospital_card_number,'') LIKE ?
         ORDER BY registered DESC
-    """, (f"%{query}%", f"%{query}%"))
+    """,
+        (q, q, q),
+    )
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+
+def find_patient_by_hospital_card(card_number: str) -> Optional[int]:
+    raw = (card_number or "").strip()
+    if not raw:
+        return None
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM patients WHERE hospital_card_number = ? LIMIT 1",
+        (raw,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0]) if row else None
+
+
+def resolve_patient_id_from_lookup(text: str) -> Optional[int]:
+    """Resolve internal patient id from numeric ID or hospital card number."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if t.isdigit():
+        pid = int(t)
+        return pid if patient_exists(pid) else None
+    return find_patient_by_hospital_card(t)
 
 def discharge_patient(patient_id):
     conn = connect()
@@ -610,7 +924,7 @@ def get_patient_name(patient_id: int):
 def get_patient(patient_id: int):
     conn = connect()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM patients WHERE id = ? LIMIT 1", (patient_id,))
+    cursor.execute(_PATIENT_SELECT + " WHERE id = ? LIMIT 1", (patient_id,))
     row = cursor.fetchone()
     conn.close()
     return row
@@ -745,6 +1059,7 @@ def get_admin_kpis():
     return {
         "patients_registered": s["total"],
         "appointments_today": s["today_appointments"],
+        "registered_staff": count_registered_staff(True),
         "unpaid_invoice_count": unpaid_count,
         "outstanding_total": round(outstanding, 2),
         "low_stock_skus": low_n,
@@ -810,6 +1125,25 @@ def get_doctors(active_only: bool = True):
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+
+def get_active_doctors_for_booking():
+    """Active doctors assigned to a department (required for reception booking workflow)."""
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT d.id, d.full_name, d.department_id, COALESCE(dep.name, '')
+        FROM doctors d
+        LEFT JOIN departments dep ON dep.id = d.department_id
+        WHERE d.active = 1 AND d.department_id IS NOT NULL
+        ORDER BY dep.name, d.full_name
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 
 def set_doctor_active(doctor_id: int, active: bool):
     conn = connect()
